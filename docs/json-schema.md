@@ -56,6 +56,14 @@ This document defines the JSON output format produced by `gh-repo-stats --json`.
 | `discussions`       | `number`  | Number of discussions                                 |
 | `commitComments`    | `number`  | Number of commit comments                             |
 | `issueEvents`       | `number`  | Number of issue events                                |
+| `defaultBranch`     | `string`  | Default branch name; empty for an empty repository    |
+| `pipelines`         | `number`  | Number of GitHub Actions workflows defined            |
+| `lastCommitDate`    | `string`  | ISO 8601 date of the last commit on the default branch |
+| `lastCommitAuthor`  | `string`  | Author of the last commit on the default branch       |
+| `lastPipelineStatus` | `string` | Conclusion of the most recent workflow run, or its status if still running |
+| `lastPipelineDate`  | `string`  | ISO 8601 date of the most recent workflow run         |
+| `lastPipelineRef`   | `string`  | Branch the most recent workflow run executed against  |
+| `maintainers`       | `string`  | Semicolon-separated direct collaborators holding `admin` or `maintain`. Excludes access inherited from organization or team membership |
 
 All fields are always present in the output.
 

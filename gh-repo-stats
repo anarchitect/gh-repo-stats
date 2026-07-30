@@ -502,7 +502,7 @@ GenerateFiles() {
       IS_EMPTY_HEADER="";
     fi
 
-    echo "Org_Name,Repo_Name,${IS_EMPTY_HEADER}Last_Push,Last_Update,isFork,isArchived,Repo_Size(mb),Record_Count,Collaborator_Count,Protected_Branch_Count,PR_Review_Count,Milestone_Count,Issue_Count,PR_Count,PR_Review_Comment_Count,Commit_Comment_Count,Issue_Comment_Count,Issue_Event_Count,Release_Count,Project_Count,Branch_Count,Tag_Count,Discussion_Count,Has_Wiki,Full_URL,Migration_Issue,Created" >>"${OUTPUT_FILE_NAME}" 2>&1
+    echo "Org_Name,Repo_Name,${IS_EMPTY_HEADER}Last_Push,Last_Update,isFork,isArchived,Repo_Size(mb),Record_Count,Collaborator_Count,Protected_Branch_Count,PR_Review_Count,Milestone_Count,Issue_Count,PR_Count,PR_Review_Comment_Count,Commit_Comment_Count,Issue_Comment_Count,Issue_Event_Count,Release_Count,Project_Count,Branch_Count,Tag_Count,Discussion_Count,Has_Wiki,Full_URL,Migration_Issue,Created,Default_Branch,Pipeline_Count,Last_Commit_Date,Last_Commit_Author,Last_Pipeline_Status,Last_Pipeline_Date,Last_Pipeline_Ref,Maintainers" >>"${OUTPUT_FILE_NAME}" 2>&1
 
     #######################
     # Load the error code #
@@ -683,6 +683,105 @@ CheckAPILimit() {
   fi
 }
 ################################################################################
+#### Function AbortIncomplete ##################################################
+AbortIncomplete() {
+  ##############################################################################
+  # Stop the run and make sure the partial output can never be mistaken for a  #
+  # complete inventory.                                                        #
+  ##############################################################################
+  ABORT_REASON="$1"
+
+  echo ""
+  echo "######################################################"
+  echo "ERROR! ${ABORT_REASON}"
+  echo "The inventory is INCOMPLETE and has been stopped."
+
+  if [[ ${JSON_OUTPUT} -ne 1 ]] && [ -f "${OUTPUT_FILE_NAME}" ]; then
+    INCOMPLETE_FILE_NAME="${OUTPUT_FILE_NAME%.csv}-INCOMPLETE.csv"
+    if mv "${OUTPUT_FILE_NAME}" "${INCOMPLETE_FILE_NAME}"; then
+      echo "Partial results saved to:[${INCOMPLETE_FILE_NAME}]"
+      echo "Do not treat that file as a full inventory."
+    fi
+  fi
+
+  echo "######################################################"
+  exit 1
+}
+################################################################################
+#### Function EnrichmentFailure ################################################
+EnrichmentFailure() {
+  ##############################################################################
+  # Turn a failed REST call into an actionable abort message.                  #
+  ##############################################################################
+  FAILED_ENDPOINT="$1"
+  FAILED_REPO="$2"
+  FAILED_OUTPUT="$3"
+
+  if echo "${FAILED_OUTPUT}" | grep -qiE "rate limit|secondary rate"; then
+    AbortIncomplete "API rate limit exhausted while reading ${FAILED_ENDPOINT} for ${FAILED_REPO}. Wait for the limit to reset, then re-run. If this organization has 1500 or more repositories, contact the team that supplied this script before retrying."
+  elif echo "${FAILED_OUTPUT}" | grep -qiE "404|not found"; then
+    AbortIncomplete "Could not read ${FAILED_ENDPOINT} for ${FAILED_REPO} (not found). The repository may have been deleted or renamed during the run."
+  else
+    AbortIncomplete "Could not read ${FAILED_ENDPOINT} for ${FAILED_REPO}. This usually means the token lacks administration access to that repository. Re-run with an account that owns the organization. Details: ${FAILED_OUTPUT}"
+  fi
+}
+################################################################################
+#### Function EnrichRepoStats ##################################################
+EnrichRepoStats() {
+  ##############################################################################
+  # Collect pipeline and ownership data. These fields are only available over  #
+  # REST, because the GraphQL API has no schema for Actions workflow runs.     #
+  # Costs roughly three REST calls per repository.                             #
+  ##############################################################################
+  ENRICH_OWNER="$1"
+  ENRICH_REPO="$2"
+
+  PIPELINE_CT=0
+  LAST_PIPELINE_STATUS=""
+  LAST_PIPELINE_DATE=""
+  LAST_PIPELINE_REF=""
+  MAINTAINERS=""
+
+  ##################################################
+  # How many workflows are defined in the repository #
+  ##################################################
+  if WORKFLOW_DATA=$(gh api "repos/${ENRICH_OWNER}/${ENRICH_REPO}/actions/workflows" 2>&1); then
+    PIPELINE_CT=$(echo "${WORKFLOW_DATA}" | jq -r '.total_count // 0')
+  else
+    EnrichmentFailure "actions/workflows" "${ENRICH_OWNER}/${ENRICH_REPO}" "${WORKFLOW_DATA}"
+  fi
+
+  ############################################################
+  # Most recent workflow run, across all branches and events #
+  ############################################################
+  if RUN_DATA=$(gh api "repos/${ENRICH_OWNER}/${ENRICH_REPO}/actions/runs?per_page=1" 2>&1); then
+    # A completed run reports a conclusion; an in-flight run only has a status.
+    LAST_PIPELINE_STATUS=$(echo "${RUN_DATA}" | jq -r '.workflow_runs[0].conclusion // .workflow_runs[0].status // ""')
+    LAST_PIPELINE_DATE=$(echo "${RUN_DATA}" | jq -r '.workflow_runs[0].updated_at // ""')
+    LAST_PIPELINE_REF=$(echo "${RUN_DATA}" | jq -r '.workflow_runs[0].head_branch // ""')
+  else
+    EnrichmentFailure "actions/runs" "${ENRICH_OWNER}/${ENRICH_REPO}" "${RUN_DATA}"
+  fi
+
+  ##############################################################################
+  # Direct collaborators holding admin or maintain. Deliberately excludes      #
+  # access inherited from organization or team membership, because only direct #
+  # grants have to be recreated by hand in a target organization.              #
+  ##############################################################################
+  if COLLAB_DATA=$(gh api "repos/${ENRICH_OWNER}/${ENRICH_REPO}/collaborators?affiliation=direct&per_page=100" 2>&1); then
+    MAINTAINERS=$(echo "${COLLAB_DATA}" | jq -r '[.[] | select(.permissions.admin or .permissions.maintain) | .login] | join(";")')
+  else
+    EnrichmentFailure "collaborators" "${ENRICH_OWNER}/${ENRICH_REPO}" "${COLLAB_DATA}"
+  fi
+
+  ##############################################################################
+  # Commas would corrupt the CSV row, so flatten them out of free-text fields. #
+  ##############################################################################
+  LAST_PIPELINE_STATUS=$(echo "${LAST_PIPELINE_STATUS}" | tr ',' ' ')
+  LAST_PIPELINE_REF=$(echo "${LAST_PIPELINE_REF}" | tr ',' ' ')
+  MAINTAINERS=$(echo "${MAINTAINERS}" | tr ',' ' ')
+}
+################################################################################
 #### Function GetRepos #########################################################
 GetRepos() {
   # When the version is 2.21, we need to remove the isEmpty flag
@@ -713,6 +812,17 @@ GetRepos() {
             totalCount
           }
           createdAt
+          defaultBranchRef {
+            name
+            target {
+              ... on Commit {
+                committedDate
+                author {
+                  name
+                }
+              }
+            }
+          }
           diskUsage
           discussions {
             totalCount
@@ -951,6 +1061,14 @@ GenerateJSONObject() {
     --argjson discussions "${DISCUSSION_CT:-0}" \
     --argjson commitComments "${COMMIT_COMMENT_CT:-0}" \
     --argjson issueEvents "${ISSUE_EVENT_CT:-0}" \
+    --arg defaultBranch "${DEFAULT_BRANCH}" \
+    --argjson pipelines "${PIPELINE_CT:-0}" \
+    --arg lastCommitDate "${LAST_COMMIT_DATE}" \
+    --arg lastCommitAuthor "${LAST_COMMIT_AUTHOR}" \
+    --arg lastPipelineStatus "${LAST_PIPELINE_STATUS}" \
+    --arg lastPipelineDate "${LAST_PIPELINE_DATE}" \
+    --arg lastPipelineRef "${LAST_PIPELINE_REF}" \
+    --arg maintainers "${MAINTAINERS}" \
     '{
       org: $org,
       name: $name,
@@ -974,7 +1092,15 @@ GenerateJSONObject() {
       projects: $projects,
       discussions: $discussions,
       commitComments: $commitComments,
-      issueEvents: $issueEvents
+      issueEvents: $issueEvents,
+      defaultBranch: $defaultBranch,
+      pipelines: $pipelines,
+      lastCommitDate: $lastCommitDate,
+      lastCommitAuthor: $lastCommitAuthor,
+      lastPipelineStatus: $lastPipelineStatus,
+      lastPipelineDate: $lastPipelineDate,
+      lastPipelineRef: $lastPipelineRef,
+      maintainers: $maintainers
     }')
 
   ERROR_CODE=$?
@@ -1022,6 +1148,13 @@ ParseRepoData() {
   IS_ARCHIVED=$(_jq '.isArchived')
   URL=$(_jq '.url')
 
+  # Default branch and last commit come from the GraphQL response.
+  # Empty repos have a null defaultBranchRef, so fall back to an empty string.
+  DEFAULT_BRANCH=$(_jq '.defaultBranchRef.name // ""')
+  LAST_COMMIT_DATE=$(_jq '.defaultBranchRef.target.committedDate // ""')
+  # Author names such as "Surname, Firstname" would corrupt the CSV row.
+  LAST_COMMIT_AUTHOR=$(_jq '.defaultBranchRef.target.author.name // ""' | tr ',' ' ')
+
   MILESTONE_CT=$(_jq '.milestones.totalCount')
   COLLABORATOR_CT=$(_jq '.collaborators.totalCount')
   PR_CT=$(_jq '.pullRequests.totalCount')
@@ -1058,6 +1191,11 @@ ParseRepoData() {
     AnalyzePullRequests "${REPO_DATA}"
   fi
 
+  #############################################
+  # Collect pipeline and ownership data (REST) #
+  #############################################
+  EnrichRepoStats "${OWNER}" "${REPO_NAME}"
+
   ###########################
   # Build the output string #
   ###########################
@@ -1078,7 +1216,7 @@ ParseRepoData() {
   if [[ ${JSON_OUTPUT} -eq 1 ]]; then
     GenerateJSONObject
   else
-    echo "${ORG_NAME},${REPO_NAME},${IS_EMPTY}${PUSHED_AT},${UPDATED_AT},${IS_FORK},${IS_ARCHIVED},${REPO_SIZE},${RECORD_CT},${COLLABORATOR_CT},${PROTECTED_BRANCH_CT},${PR_REVIEW_CT},${MILESTONE_CT},${ISSUE_CT},${PR_CT},${PR_REVIEW_COMMENT_CT},${COMMIT_COMMENT_CT},${ISSUE_COMMENT_CT},${ISSUE_EVENT_CT},${RELEASE_CT},${PROJECT_CT},${BRANCH_CT},${TAG_CT},${DISCUSSION_CT},${HAS_WIKI},${URL},${MIGRATION_ISSUE},${CREATED_AT}" >>"${OUTPUT_FILE_NAME}"
+    echo "${ORG_NAME},${REPO_NAME},${IS_EMPTY}${PUSHED_AT},${UPDATED_AT},${IS_FORK},${IS_ARCHIVED},${REPO_SIZE},${RECORD_CT},${COLLABORATOR_CT},${PROTECTED_BRANCH_CT},${PR_REVIEW_CT},${MILESTONE_CT},${ISSUE_CT},${PR_CT},${PR_REVIEW_COMMENT_CT},${COMMIT_COMMENT_CT},${ISSUE_COMMENT_CT},${ISSUE_EVENT_CT},${RELEASE_CT},${PROJECT_CT},${BRANCH_CT},${TAG_CT},${DISCUSSION_CT},${HAS_WIKI},${URL},${MIGRATION_ISSUE},${CREATED_AT},${DEFAULT_BRANCH},${PIPELINE_CT},${LAST_COMMIT_DATE},${LAST_COMMIT_AUTHOR},${LAST_PIPELINE_STATUS},${LAST_PIPELINE_DATE},${LAST_PIPELINE_REF},${MAINTAINERS}" >>"${OUTPUT_FILE_NAME}"
 
     #######################
     # Load the error code #
