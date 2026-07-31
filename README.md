@@ -12,17 +12,20 @@
 > gh extension install anarchitect/gh-repo-stats --pin inventory-v1.4
 > ```
 >
-> See [What this fork changes](#what-this-fork-changes) for the full list. Fixes that are not specific to this fork have been submitted upstream.
+> If you are running an inventory for the first time, start at [Running an inventory](#running-an-inventory). Fixes that are not specific to this fork have been submitted upstream.
 
-## Quickstart
+---
 
-`gh repo-stats` was designed to work with GitHub.com as well as GitHub Enterprise Server 2.20 or newer.
+## Contents
 
-1. Install [GitHub CLI](https://cli.github.com/)
-1. Install [jq](https://stedolan.github.io/jq/download/)
-1. `gh extension install anarchitect/gh-repo-stats --pin inventory-v1.4`
-1. `gh repo-stats --org <ORG_NAME>`
-1. Profit! 💰 💸 🤑 💸 💰
+- [What this fork changes](#what-this-fork-changes)
+- [Running an inventory](#running-an-inventory) — step-by-step guide
+- [Understanding the output](#understanding-the-output)
+- [Troubleshooting](#troubleshooting)
+- [Command-line options](#command-line-options)
+- [Permissions](#permissions)
+
+---
 
 ## What this fork changes
 
@@ -39,24 +42,16 @@ Eight columns are appended after the existing ones, so column positions in downs
 | `Last_Pipeline_Status` | REST | Conclusion of the most recent run, or its status while still running |
 | `Last_Pipeline_Date` | REST | When that run last updated |
 | `Last_Pipeline_Ref` | REST | Branch the run executed against; not necessarily the default branch |
-| `Maintainers` | REST | See below |
+| `Maintainers` | REST | See [How `Maintainers` is defined](#how-maintainers-is-defined) |
 
 The first three come from the existing GraphQL query at no additional API cost. The Actions and collaborator fields are only available over REST, because the GraphQL API has no schema for Actions workflow runs, and cost roughly three REST calls per repository.
-
-#### How `Maintainers` is defined
-
-`Maintainers` lists **direct collaborators** holding **admin** or **maintain** permission, separated by semicolons.
-
-It **deliberately excludes** access inherited from organization or team membership. Only direct grants are attached to an individual repository and have to be recreated by hand in a target organization; organization-wide and team-based access is handled separately during a migration.
-
-This means the column is **not** a list of everyone who can access a repository. A blank cell means "no individual permission grants", not "nobody can administer this". In a well-governed organization most repositories will legitimately be blank, because access is managed through teams.
 
 ### Behaviour changes
 
 - **Enrichment failures abort the run** rather than writing blank cells. A `0` in `Pipeline_Count` therefore always means "no workflows" and never "could not check". On abort the partial CSV is renamed to `*-INCOMPLETE.csv` so it cannot be mistaken for a full inventory, and the exit code is non-zero.
 - **Requests are paced and retried.** Three back-to-back REST calls per repository trips GitHub's secondary rate limiter long before the primary hourly quota is touched, and GitHub reports that throttling on the Actions and collaborators endpoints as `404` rather than `403`. Requests are spread out, retried with exponential backoff, and an exhausted primary quota is confirmed against the live `rate_limit` endpoint rather than inferred from the error text.
 
-Pacing makes runs slower but reliable: budget roughly 5 to 10 seconds per repository.
+Pacing makes runs slower but reliable. See [expected duration](#4-run-the-inventory).
 
 ### Fixes
 
@@ -65,19 +60,213 @@ Pacing makes runs slower but reliable: budget roughly 5 to 10 seconds per reposi
 | `Project_Count` always reported `null`; the query was renamed to `projectsV2` but the parser still read `.projects` | [#223](https://github.com/mona-actions/gh-repo-stats/pull/223) |
 | `isCloud()` only matched `OSTYPE` `msys`, so Git Bash builds reporting `cygwin` silently produced 27 columns instead of 28 and a `null` `Protected_Branch_Count` | [#224](https://github.com/mona-actions/gh-repo-stats/pull/224) |
 | `base64: invalid input` on every field read on Windows, because `jq` emits CRLF and bash does not split on `CR` | [#224](https://github.com/mona-actions/gh-repo-stats/pull/224) |
+| The README documented the archived column as `isArchive` while the script emits `isArchived` | [#225](https://github.com/mona-actions/gh-repo-stats/pull/225) |
 | Secondary rate limiting aborted runs non-deterministically | Specific to the added REST calls |
 
-### Organization size
+---
 
-The added REST calls mean an organization of roughly **1,500 repositories or more** may exhaust the hourly REST quota of 5,000 calls before the run completes. Check the repository count before starting a large run:
+## Running an inventory
 
-```shell
-gh api "orgs/YOUR-ORG/repos?per_page=1" --include | grep -i "^link:"
+A complete walkthrough, suitable for handing to someone running the inventory for the first time. Commands are shown for PowerShell on Windows; they work unchanged in bash on macOS and Linux apart from the installation step.
+
+### Before you start
+
+> [!IMPORTANT]
+> **Check the repository count first.** The added REST calls mean an organization of roughly **1,500 repositories or more** may exhaust the hourly REST quota of 5,000 calls before the run finishes. Raise this with whoever asked you to run the inventory before starting a large run.
+>
+> ```powershell
+> gh api "orgs/YOUR-ORG/repos?per_page=1" --include | Select-String -Pattern "^link:"
+> ```
+>
+> The `page=` value at the end of the `rel="last"` link is the repository count. It is also shown on the organization's home page.
+
+**What is collected.** Metadata only: repository names and URLs, sizes, dates, branch and tag counts, issue and pull request counts, workflow counts and their most recent run status, the most recent commit date and author, and repository maintainers. **No source code is read or transmitted.** The CSV is written to your local machine and goes nowhere else.
+
+**Access required.** Run as a **GitHub organization owner**. The added columns read repository administration settings, and an account without owner access will abort rather than produce partial data.
+
+### 1. Install the prerequisites
+
+Two tools are required: the GitHub CLI (`gh`) and `jq`, a JSON command-line processor.
+
+```powershell
+winget install --id GitHub.cli
+winget install --id jqlang.jq
 ```
 
-The `page=` value in the `rel="last"` link is the repository count.
+On macOS use `brew install gh jq`; on Debian or Ubuntu, `sudo apt-get install gh jq`. If `winget` is unavailable, see <https://cli.github.com> and <https://jqlang.org/download/>.
 
-## Usage
+Close and reopen your terminal after installing, then confirm both are on your `PATH`:
+
+```powershell
+gh --version
+jq --version
+```
+
+Both must succeed before continuing. If either reports "not found", the tool is not installed correctly or the terminal has not picked up the updated `PATH`.
+
+### 2. Sign in to GitHub
+
+```powershell
+gh auth login
+```
+
+Follow the prompts and sign in as an organization owner.
+
+One permission beyond the default set is required, used to count linked projects:
+
+```powershell
+gh auth refresh -h github.com -s read:project
+```
+
+This displays a one-time code and opens a browser page. Enter the code and approve the request. Confirm it applied:
+
+```powershell
+gh auth status
+```
+
+The `Token scopes` line must include `read:project`.
+
+> [!TIP]
+> If you are signed in to more than one GitHub account, make the right one active before running anything, and again in any new terminal:
+>
+> ```powershell
+> gh auth switch --user YOUR-USERNAME
+> ```
+
+### 3. Install the inventory tool
+
+```powershell
+gh extension install anarchitect/gh-repo-stats --pin inventory-v1.4
+```
+
+The `--pin` flag locks you to a specific tested version, so results stay reproducible if the tool is updated later. Confirm it installed:
+
+```powershell
+gh repo-stats --help
+```
+
+### 4. Run the inventory
+
+Replace `YOUR-ORG` with the organization name exactly as it appears in its GitHub URL:
+
+```powershell
+gh repo-stats --org YOUR-ORG --output CSV
+```
+
+**Expected duration: roughly 20 seconds per repository.** A 200-repository organization takes about an hour. The exact figure varies with how many issues and pull requests each repository holds, and the script deliberately paces itself to stay within GitHub's rate limits, so periods of apparent inactivity are normal and expected. Leave the terminal open until it finishes.
+
+> [!NOTE]
+> `--output` selects the output *format* (`CSV` or `Table`), not a filename. Results are always written to `<org>-all_repos-<timestamp>.csv` in the directory you ran the command from.
+
+**Expected output** is a progress line per repository, followed by:
+
+```
+######################################################
+The script has completed
+
+Results file:[YOUR-ORG-all_repos-<timestamp>.csv]
+######################################################
+```
+
+### 5. Collect the results
+
+The file to keep is `YOUR-ORG-all_repos-<timestamp>.csv`.
+
+**If the filename ends in `-INCOMPLETE.csv`**, the run stopped early and the data is partial. Keep it anyway and note the error shown in the terminal — together they identify what went wrong. Do not treat an `-INCOMPLETE` file as a full inventory.
+
+### Removing the tool afterwards
+
+```powershell
+gh extension remove repo-stats
+```
+
+To revoke the additional permission, visit <https://github.com/settings/applications>, select **GitHub CLI**, and adjust or revoke access.
+
+---
+
+## Understanding the output
+
+Each row is one repository. Output conforms to the [gh-stats-visualizer](https://github.com/mona-actions/gh-stats-visualizer) input format. With `--json` (`-J`), output is written as JSON conforming to [`json-schema.md`](docs/json-schema.md) instead.
+
+```csv
+Org_Name,Repo_Name,Is_Empty,Last_Push,Last_Update,isFork,isArchived,Repo_Size(mb),Record_Count,Collaborator_Count,Protected_Branch_Count,PR_Review_Count,Milestone_Count,Issue_Count,PR_Count,PR_Review_Comment_Count,Commit_Comment_Count,Issue_Comment_Count,Issue_Event_Count,Release_Count,Project_Count,Branch_Count,Tag_Count,Discussion_Count,Has_Wiki,Full_URL,Migration_Issue,Created,Default_Branch,Pipeline_Count,Last_Commit_Date,Last_Commit_Author,Last_Pipeline_Status,Last_Pipeline_Date,Last_Pipeline_Ref,Maintainers
+tinyfists,actions-experiments,false,2023-03-10T16:15:27Z,2022-10-28T19:38:34Z,false,false,0,19,18,0,0,0,0,1,0,0,0,0,0,0,2,0,0,true,https://github.com/tinyfists/actions-experiments,FALSE,2020-01-01T13:37:00Z,main,2,2023-03-10T16:15:27Z,Mona Lisa,success,2023-03-10T16:18:02Z,main,octocat;hubot
+tinyfists,git-xargs,false,2022-12-09T03:44:39Z,2022-11-01T03:19:49Z,false,false,0,19,18,0,0,0,0,1,0,0,0,0,0,0,2,0,0,true,https://github.com/tinyfists/git-xargs,FALSE,2020-01-01T13:37:00Z,main,0,2022-12-09T03:44:39Z,Mona Lisa,,,,
+tinyfists,githubcustomer,false,2022-06-04T17:00:43Z,2022-05-10T03:05:16Z,false,false,0,25,18,0,0,0,4,0,0,0,0,3,0,0,1,0,0,true,https://github.com/tinyfists/githubcustomer,FALSE,2020-01-01T13:37:00Z,main,1,2022-06-04T17:00:43Z,Mona Lisa,failure,2022-06-04T17:03:11Z,feature/api,
+```
+
+### How `Maintainers` is defined
+
+`Maintainers` lists **direct collaborators** holding **admin** or **maintain** permission, separated by semicolons.
+
+It **deliberately excludes** access inherited from organization or team membership. Only direct grants are attached to an individual repository and have to be recreated by hand in a target organization; organization-wide and team-based access is handled separately during a migration.
+
+This means the column is **not** a list of everyone who can access a repository. A blank cell means "no individual permission grants", **not** "nobody can administer this". In a well-governed organization most repositories will legitimately be blank, because access is managed through teams.
+
+### `0` versus blank
+
+A `0` in `Pipeline_Count` genuinely means the repository has no workflows. The script is built to stop rather than guess: if it cannot read a repository it aborts the run instead of writing a misleading `0` or blank. Values that do appear can therefore be trusted.
+
+An empty `Last_Pipeline_Status` means the repository has never run a workflow. An empty `Default_Branch` means the repository has no commits.
+
+### All columns
+
+- `Org_Name`: Organization login
+- `Repo_Name`: Repository name
+- `Is_Empty`: Whether the repository is empty; only available for GitHub.com and GHES >= 3.0
+- `Last_Push`: Date/time when a push was last made
+- `Last_Update`: Date/time when an update was last made
+- `isFork`: Whether the repository is a fork
+- `isArchived`: Whether the repository is archived
+- `Repo_Size(mb)`: Size of the repository in megabytes
+- `Record_Count`: Number of database records this repository represents
+- `Collaborator_Count`: Number of users who have contributed to this repository
+- `Protected_Branch_Count`: Number of branch protection rules on this repository
+- `PR_Review_Count`: Number of pull request reviews
+- `Milestone_Count`: Number of issue milestones
+- `Issue_Count`: Number of issues
+- `PR_Count`: Number of pull requests
+- `PR_Review_Comment_Count`: Number of pull request review comments
+- `Commit_Comment_Count`: Number of commit comments
+- `Issue_Comment_Count`: Number of issue comments
+- `Issue_Event_Count`: Number of issues
+- `Release_Count`: Number of releases
+- `Project_Count`: Number of projects
+- `Branch_Count`: Number of branches
+- `Tag_Count`: Number of tags
+- `Discussion_Count`: Number of discussions
+- `Has_Wiki`: Whether the repository has wiki feature enabled; unable to tell whether user via API
+- `Full_URL`: Repository URL
+- `Migration_Issue`: Indicates whether the repository might have a problem during migration due to
+  - 60,000 or more number of objects being imported
+  - 1.5 GB or larger size on disk
+- `Created`: Date/time when the repository was created
+- `Default_Branch`: Default branch name; empty for a repository with no commits
+- `Pipeline_Count`: Number of GitHub Actions workflows defined
+- `Last_Commit_Date`: Date/time of the last commit on the default branch
+- `Last_Commit_Author`: Author of the last commit on the default branch
+- `Last_Pipeline_Status`: Conclusion of the most recent workflow run, or its status if still running; empty if the repository has never run a workflow
+- `Last_Pipeline_Date`: Date/time the most recent workflow run last updated
+- `Last_Pipeline_Ref`: Branch the most recent workflow run executed against
+- `Maintainers`: Semicolon-separated direct collaborators holding `admin` or `maintain`; excludes access inherited from organization or team membership
+
+---
+
+## Troubleshooting
+
+| Symptom | What it means | What to do |
+| --- | --- | --- |
+| `jq: command not found` | `jq` is not installed or not on `PATH` | Return to [step 1](#1-install-the-prerequisites) and reopen the terminal |
+| `Your token has not been granted the required scopes` | Missing `read:project` | Re-run the `gh auth refresh` command in [step 2](#2-sign-in-to-github) |
+| `Error getting Membership for Org: <name>` | The organization name is wrong, or the signed-in account is not a member | Check the exact spelling in the organization's GitHub URL, and confirm the active account with `gh auth status` |
+| `the token lacks administration access` | Not signed in as an organization owner | Re-run `gh auth login` as an owner |
+| `API rate limit exhausted` | The hourly quota ran out mid-run | Wait for the quota to reset before retrying. If the organization has 1,500 or more repositories, raise it rather than simply re-running |
+| Filename ends `-INCOMPLETE.csv` | The run stopped partway | Keep the file and the terminal error message; do not treat it as a full inventory |
+| `invalid API endpoint: "C:/Program Files/Git/"` | An older version, on a Windows shell reporting `OSTYPE` as `cygwin` | Reinstall pinned to `inventory-v1.4` |
+
+---
+
+## Command-line options
 
 ```shell
 $ gh repo-stats --help
@@ -119,7 +308,9 @@ Example:
   gh repo-stats -o my-org-name --json
 ```
 
-> **Note:** `--output` sets the output *format* (`CSV` or `Table`), not a filename. Results are always written to `<org>-all_repos-<timestamp>.csv` in the current directory.
+`gh repo-stats` was designed to work with GitHub.com as well as GitHub Enterprise Server 2.20 or newer.
+
+---
 
 ## Permissions
 
@@ -136,63 +327,3 @@ The permissions needed by `gh repo-stats` depends based on `-y, --token-type`:
   - Repository Projects
   - Repository Pull requests
   - Organization Members
-
-Run as an organization **owner**. The added columns read repository administration settings, and an account without owner access will abort rather than produce partial data.
-
-If `read:project` is missing, add it with:
-
-```shell
-gh auth refresh -h github.com -s read:project
-```
-
-## Output
-
-`gh repo-stats` produces either a visual table or `*.csv` file containing detailed information about various records within repositories. When the `--json` (`-J`) flag is provided, output is written as JSON conforming to the schema defined in [`json-schema.md`](docs/json-schema.md). The output conforms to the [gh-stats-visualizer](https://github.com/mona-actions/gh-stats-visualizer) input format.
-
-```csv
-Org_Name,Repo_Name,Is_Empty,Last_Push,Last_Update,isFork,isArchived,Repo_Size(mb),Record_Count,Collaborator_Count,Protected_Branch_Count,PR_Review_Count,Milestone_Count,Issue_Count,PR_Count,PR_Review_Comment_Count,Commit_Comment_Count,Issue_Comment_Count,Issue_Event_Count,Release_Count,Project_Count,Branch_Count,Tag_Count,Discussion_Count,Has_Wiki,Full_URL,Migration_Issue,Created,Default_Branch,Pipeline_Count,Last_Commit_Date,Last_Commit_Author,Last_Pipeline_Status,Last_Pipeline_Date,Last_Pipeline_Ref,Maintainers
-tinyfists,actions-experiments,false,2023-03-10T16:15:27Z,2022-10-28T19:38:34Z,false,false,0,19,18,0,0,0,0,1,0,0,0,0,0,0,2,0,0,true,https://github.com/tinyfists/actions-experiments,FALSE,2020-01-01T13:37:00Z,main,2,2023-03-10T16:15:27Z,Mona Lisa,success,2023-03-10T16:18:02Z,main,octocat;hubot
-tinyfists,git-xargs,false,2022-12-09T03:44:39Z,2022-11-01T03:19:49Z,false,false,0,19,18,0,0,0,0,1,0,0,0,0,0,0,2,0,0,true,https://github.com/tinyfists/git-xargs,FALSE,2020-01-01T13:37:00Z,main,0,2022-12-09T03:44:39Z,Mona Lisa,,,,
-tinyfists,githubcustomer,false,2022-06-04T17:00:43Z,2022-05-10T03:05:16Z,false,false,0,25,18,0,0,0,4,0,0,0,0,3,0,0,1,0,0,true,https://github.com/tinyfists/githubcustomer,FALSE,2020-01-01T13:37:00Z,main,1,2022-06-04T17:00:43Z,Mona Lisa,failure,2022-06-04T17:03:11Z,feature/api,
-```
-
-**Columns**
-
-- `Org_Name`: Organization login
-- `Repo_Name`: Repository name
-- `Is_Empty`: Whether the repository is empty; only available for GitHub.com and GHES >= 3.0
-- `Last_Push`: Date/time when a push was last made
-- `Last_Update`: Date/time when an update was last made
-- `isFork`: Whether the repository is a fork
-- `isArchived`: Whether the repository is archived
-- `Repo_Size(mb)`: Size of the repository in megabytes
-- `Record_Count`: Number of database records this repository represents
-- `Collaborator_Count`: Number of users who have contributed to this repository
-- `Protected_Branch_Count`: Number of branch protection rules on this repository
-- `PR_Review_Count`: Number of pull request reviews
-- `Milestone_Count`: Number of issue milestones
-- `Issue_Count`: Number of issues
-- `PR_Count`: Number of pull requests
-- `PR_Review_Comment_Count`: Number of pull request review comments
-- `Commit_Comment_Count`: Number of commit comments
-- `Issue_Comment_Count`: Number of issue comments
-- `Issue_Event_Count`: Number of issues
-- `Release_Count`: Number of releases
-- `Project_Count`: Number of projects
-- `Branch_Count`: Number of branches
-- `Tag_Count`: Number of tags
-- `Discussion_Count`: Number of discussions
-- `Has_Wiki`: Whether the repository has wiki feature enabled; unable to tell whether user via API
-- `Full_URL`: Repository URL
-- `Migration_Issue`: Indicates whether the repository might have a problem during migration due to
-  - 60,000 or more number of objects being imported
-  - 1.5 GB or larger size on disk
-- `Created`: Date/time when the repository was created
-- `Default_Branch`: Default branch name; empty for a repository with no commits
-- `Pipeline_Count`: Number of GitHub Actions workflows defined
-- `Last_Commit_Date`: Date/time of the last commit on the default branch
-- `Last_Commit_Author`: Author of the last commit on the default branch
-- `Last_Pipeline_Status`: Conclusion of the most recent workflow run, or its status if still running; empty if the repository has never run a workflow
-- `Last_Pipeline_Date`: Date/time the most recent workflow run last updated
-- `Last_Pipeline_Ref`: Branch the most recent workflow run executed against
-- `Maintainers`: Semicolon-separated direct collaborators holding `admin` or `maintain`; excludes access inherited from organization or team membership
