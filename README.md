@@ -9,7 +9,7 @@
 > **Install a specific tested version rather than the branch head:**
 >
 > ```shell
-> gh extension install anarchitect/gh-repo-stats --pin inventory-v1.3
+> gh extension install anarchitect/gh-repo-stats --pin inventory-v1.4
 > ```
 >
 > See [What this fork changes](#what-this-fork-changes) for the full list. Fixes that are not specific to this fork have been submitted upstream.
@@ -20,7 +20,7 @@
 
 1. Install [GitHub CLI](https://cli.github.com/)
 1. Install [jq](https://stedolan.github.io/jq/download/)
-1. `gh extension install anarchitect/gh-repo-stats --pin inventory-v1.3`
+1. `gh extension install anarchitect/gh-repo-stats --pin inventory-v1.4`
 1. `gh repo-stats --org <ORG_NAME>`
 1. Profit! 💰 💸 🤑 💸 💰
 
