@@ -2,15 +2,80 @@
 
 `gh repo-stats` scans an organization or list of organizations for all repositories and gathers size statistics, key to understanding how long a migration of the data from one instance of **GitHub** to another will take.
 
+> ### About this fork
+>
+> This is a fork of [`mona-actions/gh-repo-stats`](https://github.com/mona-actions/gh-repo-stats) that adds eight columns covering CI/CD pipelines and repository ownership, and fixes several defects found while testing on Windows and against large organizations.
+>
+> **Install a specific tested version rather than the branch head:**
+>
+> ```shell
+> gh extension install anarchitect/gh-repo-stats --pin inventory-v1.3
+> ```
+>
+> See [What this fork changes](#what-this-fork-changes) for the full list. Fixes that are not specific to this fork have been submitted upstream.
+
 ## Quickstart
 
 `gh repo-stats` was designed to work with GitHub.com as well as GitHub Enterprise Server 2.20 or newer.
 
 1. Install [GitHub CLI](https://cli.github.com/)
 1. Install [jq](https://stedolan.github.io/jq/download/)
-1. `gh extension install mona-actions/gh-repo-stats`
+1. `gh extension install anarchitect/gh-repo-stats --pin inventory-v1.3`
 1. `gh repo-stats --org <ORG_NAME>`
 1. Profit! 💰 💸 🤑 💸 💰
+
+## What this fork changes
+
+### Added columns
+
+Eight columns are appended after the existing ones, so column positions in downstream tooling are unchanged.
+
+| Column | Source | Notes |
+| --- | --- | --- |
+| `Default_Branch` | GraphQL | Empty for a repository with no commits |
+| `Pipeline_Count` | REST | Number of GitHub Actions workflows defined |
+| `Last_Commit_Date` | GraphQL | Last commit on the default branch |
+| `Last_Commit_Author` | GraphQL | Commas are replaced with spaces to protect the CSV |
+| `Last_Pipeline_Status` | REST | Conclusion of the most recent run, or its status while still running |
+| `Last_Pipeline_Date` | REST | When that run last updated |
+| `Last_Pipeline_Ref` | REST | Branch the run executed against; not necessarily the default branch |
+| `Maintainers` | REST | See below |
+
+The first three come from the existing GraphQL query at no additional API cost. The Actions and collaborator fields are only available over REST, because the GraphQL API has no schema for Actions workflow runs, and cost roughly three REST calls per repository.
+
+#### How `Maintainers` is defined
+
+`Maintainers` lists **direct collaborators** holding **admin** or **maintain** permission, separated by semicolons.
+
+It **deliberately excludes** access inherited from organization or team membership. Only direct grants are attached to an individual repository and have to be recreated by hand in a target organization; organization-wide and team-based access is handled separately during a migration.
+
+This means the column is **not** a list of everyone who can access a repository. A blank cell means "no individual permission grants", not "nobody can administer this". In a well-governed organization most repositories will legitimately be blank, because access is managed through teams.
+
+### Behaviour changes
+
+- **Enrichment failures abort the run** rather than writing blank cells. A `0` in `Pipeline_Count` therefore always means "no workflows" and never "could not check". On abort the partial CSV is renamed to `*-INCOMPLETE.csv` so it cannot be mistaken for a full inventory, and the exit code is non-zero.
+- **Requests are paced and retried.** Three back-to-back REST calls per repository trips GitHub's secondary rate limiter long before the primary hourly quota is touched, and GitHub reports that throttling on the Actions and collaborators endpoints as `404` rather than `403`. Requests are spread out, retried with exponential backoff, and an exhausted primary quota is confirmed against the live `rate_limit` endpoint rather than inferred from the error text.
+
+Pacing makes runs slower but reliable: budget roughly 5 to 10 seconds per repository.
+
+### Fixes
+
+| Fix | Also submitted upstream |
+| --- | --- |
+| `Project_Count` always reported `null`; the query was renamed to `projectsV2` but the parser still read `.projects` | [#223](https://github.com/mona-actions/gh-repo-stats/pull/223) |
+| `isCloud()` only matched `OSTYPE` `msys`, so Git Bash builds reporting `cygwin` silently produced 27 columns instead of 28 and a `null` `Protected_Branch_Count` | [#224](https://github.com/mona-actions/gh-repo-stats/pull/224) |
+| `base64: invalid input` on every field read on Windows, because `jq` emits CRLF and bash does not split on `CR` | [#224](https://github.com/mona-actions/gh-repo-stats/pull/224) |
+| Secondary rate limiting aborted runs non-deterministically | Specific to the added REST calls |
+
+### Organization size
+
+The added REST calls mean an organization of roughly **1,500 repositories or more** may exhaust the hourly REST quota of 5,000 calls before the run completes. Check the repository count before starting a large run:
+
+```shell
+gh api "orgs/YOUR-ORG/repos?per_page=1" --include | grep -i "^link:"
+```
+
+The `page=` value in the `rel="last"` link is the repository count.
 
 ## Usage
 
@@ -54,6 +119,8 @@ Example:
   gh repo-stats -o my-org-name --json
 ```
 
+> **Note:** `--output` sets the output *format* (`CSV` or `Table`), not a filename. Results are always written to `<org>-all_repos-<timestamp>.csv` in the current directory.
+
 ## Permissions
 
 `gh repo-stats` uses the permissions of the authenticated accounts setup with [`gh auth login`](https://cli.github.com/manual/gh_auth_login) or [environment variables supported by `gh`](https://cli.github.com/manual/gh_help_environment).
@@ -70,19 +137,23 @@ The permissions needed by `gh repo-stats` depends based on `-y, --token-type`:
   - Repository Pull requests
   - Organization Members
 
+Run as an organization **owner**. The added columns read repository administration settings, and an account without owner access will abort rather than produce partial data.
+
+If `read:project` is missing, add it with:
+
+```shell
+gh auth refresh -h github.com -s read:project
+```
+
 ## Output
 
 `gh repo-stats` produces either a visual table or `*.csv` file containing detailed information about various records within repositories. When the `--json` (`-J`) flag is provided, output is written as JSON conforming to the schema defined in [`json-schema.md`](docs/json-schema.md). The output conforms to the [gh-stats-visualizer](https://github.com/mona-actions/gh-stats-visualizer) input format.
 
 ```csv
-Org_Name,Repo_Name,Is_Empty,Last_Push,Last_Update,isFork,isArchive,Repo_Size(mb),Record_Count,Collaborator_Count,Protected_Branch_Count,PR_Review_Count,Milestone_Count,Issue_Count,PR_Count,PR_Review_Comment_Count,Commit_Comment_Count,Issue_Comment_Count,Issue_Event_Count,Release_Count,Project_Count,Branch_Count,Tag_Count,Discussion_Count,Has_Wiki,Full_URL,Migration_Issue,Created
-tinyfists,actions-experiments,false,2023-03-10T16:15:27Z,2022-10-28T19:38:34Z,false,false,0,19,18,0,0,0,0,1,0,0,0,0,0,0,2,0,0,true,https://github.com/tinyfists/actions-experiments,FALSE,2020-01-01T13:37:00Z
-tinyfists,git-xargs,false,2022-12-09T03:44:39Z,2022-11-01T03:19:49Z,false,false,0,19,18,0,0,0,0,1,0,0,0,0,0,0,2,0,0,true,https://github.com/tinyfists/git-xargs,FALSE,2020-01-01T13:37:00Z
-tinyfists,githubcustomer,false,2022-06-04T17:00:43Z,2022-05-10T03:05:16Z,false,false,0,25,18,0,0,0,4,0,0,0,0,3,0,0,1,0,0,true,https://github.com/tinyfists/githubcustomer,FALSE,2020-01-01T13:37:00Z
-tinyfists,issue-driven-github-admin,false,2022-12-09T03:44:36Z,2022-10-14T22:03:38Z,false,false,2,1644,37,1,1,0,140,4,1,0,897,552,10,1,4,10,1,true,https://github.com/tinyfists/issue-driven-github-admin,FALSE,2020-01-01T13:37:00Z
-tinyfists,multi-runner-poc,false,2022-12-09T03:43:30Z,2022-08-03T12:44:35Z,false,false,0,19,18,0,0,0,0,1,0,0,0,0,0,0,2,0,0,true,https://github.com/tinyfists/multi-runner-poc,FALSE,2020-01-01T13:37:00Z
-tinyfists,pages-demo,false,2022-12-09T03:43:29Z,2022-11-17T23:44:50Z,false,false,0,19,18,0,0,0,0,1,0,0,0,0,0,0,2,0,0,true,https://github.com/tinyfists/pages-demo,FALSE,2020-01-01T13:37:00Z
-tinyfists,publish-packages-to-repo-demo,false,2022-12-09T03:43:31Z,2021-10-11T19:39:32Z,false,false,0,24,18,0,0,0,0,3,0,0,0,3,0,0,2,0,0,true,https://github.com/tinyfists/publish-packages-to-repo-demo,FALSE,2020-01-01T13:37:00Z
+Org_Name,Repo_Name,Is_Empty,Last_Push,Last_Update,isFork,isArchived,Repo_Size(mb),Record_Count,Collaborator_Count,Protected_Branch_Count,PR_Review_Count,Milestone_Count,Issue_Count,PR_Count,PR_Review_Comment_Count,Commit_Comment_Count,Issue_Comment_Count,Issue_Event_Count,Release_Count,Project_Count,Branch_Count,Tag_Count,Discussion_Count,Has_Wiki,Full_URL,Migration_Issue,Created,Default_Branch,Pipeline_Count,Last_Commit_Date,Last_Commit_Author,Last_Pipeline_Status,Last_Pipeline_Date,Last_Pipeline_Ref,Maintainers
+tinyfists,actions-experiments,false,2023-03-10T16:15:27Z,2022-10-28T19:38:34Z,false,false,0,19,18,0,0,0,0,1,0,0,0,0,0,0,2,0,0,true,https://github.com/tinyfists/actions-experiments,FALSE,2020-01-01T13:37:00Z,main,2,2023-03-10T16:15:27Z,Mona Lisa,success,2023-03-10T16:18:02Z,main,octocat;hubot
+tinyfists,git-xargs,false,2022-12-09T03:44:39Z,2022-11-01T03:19:49Z,false,false,0,19,18,0,0,0,0,1,0,0,0,0,0,0,2,0,0,true,https://github.com/tinyfists/git-xargs,FALSE,2020-01-01T13:37:00Z,main,0,2022-12-09T03:44:39Z,Mona Lisa,,,,
+tinyfists,githubcustomer,false,2022-06-04T17:00:43Z,2022-05-10T03:05:16Z,false,false,0,25,18,0,0,0,4,0,0,0,0,3,0,0,1,0,0,true,https://github.com/tinyfists/githubcustomer,FALSE,2020-01-01T13:37:00Z,main,1,2022-06-04T17:00:43Z,Mona Lisa,failure,2022-06-04T17:03:11Z,feature/api,
 ```
 
 **Columns**
@@ -93,7 +164,7 @@ tinyfists,publish-packages-to-repo-demo,false,2022-12-09T03:43:31Z,2021-10-11T19
 - `Last_Push`: Date/time when a push was last made
 - `Last_Update`: Date/time when an update was last made
 - `isFork`: Whether the repository is a fork
-- `isArchive`: Whether the repository is archived
+- `isArchived`: Whether the repository is archived
 - `Repo_Size(mb)`: Size of the repository in megabytes
 - `Record_Count`: Number of database records this repository represents
 - `Collaborator_Count`: Number of users who have contributed to this repository
@@ -107,7 +178,7 @@ tinyfists,publish-packages-to-repo-demo,false,2022-12-09T03:43:31Z,2021-10-11T19
 - `Issue_Comment_Count`: Number of issue comments
 - `Issue_Event_Count`: Number of issues
 - `Release_Count`: Number of releases
-- `Project_Count`: Number of v1 projects
+- `Project_Count`: Number of projects
 - `Branch_Count`: Number of branches
 - `Tag_Count`: Number of tags
 - `Discussion_Count`: Number of discussions
@@ -117,3 +188,11 @@ tinyfists,publish-packages-to-repo-demo,false,2022-12-09T03:43:31Z,2021-10-11T19
   - 60,000 or more number of objects being imported
   - 1.5 GB or larger size on disk
 - `Created`: Date/time when the repository was created
+- `Default_Branch`: Default branch name; empty for a repository with no commits
+- `Pipeline_Count`: Number of GitHub Actions workflows defined
+- `Last_Commit_Date`: Date/time of the last commit on the default branch
+- `Last_Commit_Author`: Author of the last commit on the default branch
+- `Last_Pipeline_Status`: Conclusion of the most recent workflow run, or its status if still running; empty if the repository has never run a workflow
+- `Last_Pipeline_Date`: Date/time the most recent workflow run last updated
+- `Last_Pipeline_Ref`: Branch the most recent workflow run executed against
+- `Maintainers`: Semicolon-separated direct collaborators holding `admin` or `maintain`; excludes access inherited from organization or team membership
