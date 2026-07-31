@@ -68,8 +68,9 @@ VERSION_MAJOR="0"
 VERSION_MINOR="0"
 REPO_PAGE_SIZE=10
 EXTRA_PAGE_SIZE=50
-ENRICH_RETRY_COUNT=3                          # Attempts per enrichment REST call before aborting
-ENRICH_RETRY_SLEEP=3                          # Seconds between enrichment retries
+ENRICH_RETRY_COUNT=5                          # Attempts per enrichment REST call before aborting
+ENRICH_RETRY_SLEEP=2                          # Base seconds for exponential backoff between retries
+ENRICH_PACE_SLEEP=1                           # Seconds between repositories, to stay under secondary rate limits
 
 ################################################################################
 #### Function PrintUsage #######################################################
@@ -742,14 +743,31 @@ EnrichmentApiCall() {
       return 0
     fi
 
-    # An exhausted quota will not recover within the retry window.
+    # An exhausted primary quota will not recover within the retry window, so
+    # abort immediately rather than sleeping pointlessly. Confirm against the
+    # live rate limit instead of trusting the message text, because GitHub
+    # reports secondary throttling on these endpoints as 404 rather than 403.
     if echo "${ENRICH_RESPONSE}" | grep -qiE "rate limit|secondary rate"; then
       return 1
     fi
 
+    CORE_LEFT=$(gh api rate_limit --jq '.resources.core.remaining' 2>/dev/null)
+    if [ -n "${CORE_LEFT}" ] && [ "${CORE_LEFT}" -eq 0 ] 2>/dev/null; then
+      ENRICH_RESPONSE="API rate limit exceeded. ${ENRICH_RESPONSE}"
+      return 1
+    fi
+
+    ############################################################################
+    # Anything else is treated as throttling or eventual consistency and is    #
+    # retried with exponential backoff. Bursting three requests per repository #
+    # trips GitHub's secondary rate limiter, which answers 404 rather than 403 #
+    # on the Actions and collaborators endpoints, so the status code alone     #
+    # cannot distinguish "throttled" from "genuinely missing".                 #
+    ############################################################################
     if [ "${ENRICH_ATTEMPT}" -lt "${ENRICH_RETRY_COUNT}" ]; then
-      Debug "Retrying ${ENRICH_PATH} after failure (attempt ${ENRICH_ATTEMPT} of ${ENRICH_RETRY_COUNT})"
-      sleep "${ENRICH_RETRY_SLEEP}"
+      ENRICH_BACKOFF=$((ENRICH_RETRY_SLEEP * ENRICH_ATTEMPT * ENRICH_ATTEMPT))
+      Debug "Retrying ${ENRICH_PATH} in ${ENRICH_BACKOFF}s (attempt ${ENRICH_ATTEMPT} of ${ENRICH_RETRY_COUNT})"
+      sleep "${ENRICH_BACKOFF}"
     fi
 
     ENRICH_ATTEMPT=$((ENRICH_ATTEMPT + 1))
@@ -791,6 +809,12 @@ EnrichRepoStats() {
   LAST_PIPELINE_DATE=""
   LAST_PIPELINE_REF=""
   MAINTAINERS=""
+
+  ##############################################################################
+  # Pace the burst. Three back to back requests per repository trips GitHub's  #
+  # secondary rate limiter well before the primary hourly quota is touched.    #
+  ##############################################################################
+  sleep "${ENRICH_PACE_SLEEP}"
 
   ##################################################
   # How many workflows are defined in the repository #
