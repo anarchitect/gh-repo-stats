@@ -1,78 +1,36 @@
 # Get Repository Statistics
 
-`gh repo-stats` scans an organization or list of organizations for all repositories and gathers size statistics, key to understanding how long a migration of the data from one instance of **GitHub** to another will take.
+`gh repo-stats` scans a GitHub organization for all repositories and gathers size, pipeline and ownership statistics, key to understanding how long a migration of the data from one instance of **GitHub** to another will take.
 
 > ### About this fork
 >
-> This is a fork of [`mona-actions/gh-repo-stats`](https://github.com/mona-actions/gh-repo-stats) that adds eight columns covering CI/CD pipelines and repository ownership, and fixes several defects found while testing on Windows and against large organizations.
+> This is a fork of [`mona-actions/gh-repo-stats`](https://github.com/mona-actions/gh-repo-stats) that adds eight columns covering CI/CD pipelines and repository ownership. Install a specific tested version rather than the branch head:
 >
-> **Install a specific tested version rather than the branch head:**
->
-> ```shell
+> ```powershell
 > gh extension install anarchitect/gh-repo-stats --pin inventory-v1.4
 > ```
->
-> If you are running an inventory for the first time, start at [Running an inventory](#running-an-inventory). Fixes that are not specific to this fork have been submitted upstream.
 
 ---
 
 ## Contents
 
-- [What this fork changes](#what-this-fork-changes)
 - [Running an inventory](#running-an-inventory) — step-by-step guide
 - [Understanding the output](#understanding-the-output)
 - [Troubleshooting](#troubleshooting)
+- [What this fork changes](#what-this-fork-changes)
 - [Command-line options](#command-line-options)
 - [Permissions](#permissions)
 
 ---
 
-## What this fork changes
-
-### Added columns
-
-Eight columns are appended after the existing ones, so column positions in downstream tooling are unchanged.
-
-| Column | Source | Notes |
-| --- | --- | --- |
-| `Default_Branch` | GraphQL | Empty for a repository with no commits |
-| `Pipeline_Count` | REST | Number of GitHub Actions workflows defined |
-| `Last_Commit_Date` | GraphQL | Last commit on the default branch |
-| `Last_Commit_Author` | GraphQL | Commas are replaced with spaces to protect the CSV |
-| `Last_Pipeline_Status` | REST | Conclusion of the most recent run, or its status while still running |
-| `Last_Pipeline_Date` | REST | When that run last updated |
-| `Last_Pipeline_Ref` | REST | Branch the run executed against; not necessarily the default branch |
-| `Maintainers` | REST | See [How `Maintainers` is defined](#how-maintainers-is-defined) |
-
-The first three come from the existing GraphQL query at no additional API cost. The Actions and collaborator fields are only available over REST, because the GraphQL API has no schema for Actions workflow runs, and cost roughly three REST calls per repository.
-
-### Behaviour changes
-
-- **Enrichment failures abort the run** rather than writing blank cells. A `0` in `Pipeline_Count` therefore always means "no workflows" and never "could not check". On abort the partial CSV is renamed to `*-INCOMPLETE.csv` so it cannot be mistaken for a full inventory, and the exit code is non-zero.
-- **Requests are paced and retried.** Three back-to-back REST calls per repository trips GitHub's secondary rate limiter long before the primary hourly quota is touched, and GitHub reports that throttling on the Actions and collaborators endpoints as `404` rather than `403`. Requests are spread out, retried with exponential backoff, and an exhausted primary quota is confirmed against the live `rate_limit` endpoint rather than inferred from the error text.
-
-Pacing makes runs slower but reliable. See [expected duration](#4-run-the-inventory).
-
-### Fixes
-
-| Fix | Also submitted upstream |
-| --- | --- |
-| `Project_Count` always reported `null`; the query was renamed to `projectsV2` but the parser still read `.projects` | [#223](https://github.com/mona-actions/gh-repo-stats/pull/223) |
-| `isCloud()` only matched `OSTYPE` `msys`, so Git Bash builds reporting `cygwin` silently produced 27 columns instead of 28 and a `null` `Protected_Branch_Count` | [#224](https://github.com/mona-actions/gh-repo-stats/pull/224) |
-| `base64: invalid input` on every field read on Windows, because `jq` emits CRLF and bash does not split on `CR` | [#224](https://github.com/mona-actions/gh-repo-stats/pull/224) |
-| The README documented the archived column as `isArchive` while the script emits `isArchived` | [#225](https://github.com/mona-actions/gh-repo-stats/pull/225) |
-| Secondary rate limiting aborted runs non-deterministically | Specific to the added REST calls |
-
----
-
 ## Running an inventory
 
-A complete walkthrough, suitable for handing to someone running the inventory for the first time. Commands are shown for PowerShell on Windows; they work unchanged in bash on macOS and Linux apart from the installation step.
+A complete walkthrough, suitable for handing to someone running the inventory for the first time.
 
 ### Before you start
 
 > [!IMPORTANT]
-> **Check the repository count first.** The added REST calls mean an organization of roughly **1,500 repositories or more** may exhaust the hourly REST quota of 5,000 calls before the run finishes. Raise this with whoever asked you to run the inventory before starting a large run.
+> **Check the repository count first.** An organization of roughly **1,500 repositories or more** may exhaust the hourly REST quota of 5,000 calls before the run finishes. Raise this with whoever asked you to run the inventory before starting a large run.
 >
 > ```powershell
 > gh api "orgs/YOUR-ORG/repos?per_page=1" --include | Select-String -Pattern "^link:"
@@ -86,14 +44,14 @@ A complete walkthrough, suitable for handing to someone running the inventory fo
 
 ### 1. Install the prerequisites
 
-Two tools are required: the GitHub CLI (`gh`) and `jq`, a JSON command-line processor.
+Open **PowerShell** or **Windows Terminal**. Two tools are required: the GitHub CLI (`gh`) and `jq`, a JSON command-line processor.
 
 ```powershell
 winget install --id GitHub.cli
 winget install --id jqlang.jq
 ```
 
-On macOS use `brew install gh jq`; on Debian or Ubuntu, `sudo apt-get install gh jq`. If `winget` is unavailable, see <https://cli.github.com> and <https://jqlang.org/download/>.
+If `winget` is unavailable, see <https://cli.github.com> and <https://jqlang.org/download/>.
 
 Close and reopen your terminal after installing, then confirm both are on your `PATH`:
 
@@ -263,6 +221,34 @@ An empty `Last_Pipeline_Status` means the repository has never run a workflow. A
 | `API rate limit exhausted` | The hourly quota ran out mid-run | Wait for the quota to reset before retrying. If the organization has 1,500 or more repositories, raise it rather than simply re-running |
 | Filename ends `-INCOMPLETE.csv` | The run stopped partway | Keep the file and the terminal error message; do not treat it as a full inventory |
 | `invalid API endpoint: "C:/Program Files/Git/"` | An older version, on a Windows shell reporting `OSTYPE` as `cygwin` | Reinstall pinned to `inventory-v1.4` |
+
+---
+
+## What this fork changes
+
+### Added columns
+
+Eight columns are appended after the existing ones, so column positions in downstream tooling are unchanged.
+
+| Column | Source | Notes |
+| --- | --- | --- |
+| `Default_Branch` | GraphQL | Empty for a repository with no commits |
+| `Pipeline_Count` | REST | Number of GitHub Actions workflows defined |
+| `Last_Commit_Date` | GraphQL | Last commit on the default branch |
+| `Last_Commit_Author` | GraphQL | Commas are replaced with spaces to protect the CSV |
+| `Last_Pipeline_Status` | REST | Conclusion of the most recent run, or its status while still running |
+| `Last_Pipeline_Date` | REST | When that run last updated |
+| `Last_Pipeline_Ref` | REST | Branch the run executed against; not necessarily the default branch |
+| `Maintainers` | REST | See [How `Maintainers` is defined](#how-maintainers-is-defined) |
+
+The first three come from the existing GraphQL query at no additional API cost. The Actions and collaborator fields are only available over REST, because the GraphQL API has no schema for Actions workflow runs, and cost roughly three REST calls per repository.
+
+### Behaviour changes
+
+- **Enrichment failures abort the run** rather than writing blank cells. A `0` in `Pipeline_Count` therefore always means "no workflows" and never "could not check". On abort the partial CSV is renamed to `*-INCOMPLETE.csv` so it cannot be mistaken for a full inventory, and the exit code is non-zero.
+- **Requests are paced and retried.** Three back-to-back REST calls per repository trips GitHub's secondary rate limiter long before the primary hourly quota is touched, and GitHub reports that throttling on the Actions and collaborators endpoints as `404` rather than `403`. Requests are spread out, retried with exponential backoff, and an exhausted primary quota is confirmed against the live `rate_limit` endpoint rather than inferred from the error text.
+
+Pacing makes runs slower but reliable. See [expected duration](#4-run-the-inventory).
 
 ---
 
