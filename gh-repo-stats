@@ -383,11 +383,28 @@ GenerateFiles() {
   # Get datestring YYYYMMDDHHMM
   DATE=$(date +%Y%m%d%H%M)
 
+  ##############################################################################
+  # Decide what to call the output.                                            #
+  #                                                                            #
+  # This runs before any organization is read, so with --input the ORG_NAME is #
+  # still empty and the file would be named '-all_repos-<date>.csv'. Fall back  #
+  # to the input file's base name, which describes the run and keeps the       #
+  # existing-file lookup below working.                                        #
+  ##############################################################################
+  FILE_PREFIX="${ORG_NAME}"
+  if [[ -z ${FILE_PREFIX} ]] && [[ -n ${INPUT_FILE_NAME} ]]; then
+    FILE_PREFIX=$(basename "${INPUT_FILE_NAME}")
+    FILE_PREFIX="${FILE_PREFIX%.*}"
+  fi
+  if [[ -z ${FILE_PREFIX} ]]; then
+    FILE_PREFIX="orgs"
+  fi
+
   ###############################
   # Handle JSON output mode     #
   ###############################
   if [[ ${JSON_OUTPUT} -eq 1 ]]; then
-    JSON_FILE_NAME="$ORG_NAME-all_repos-$DATE.json"
+    JSON_FILE_NAME="$FILE_PREFIX-all_repos-$DATE.json"
     JSON_TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gh-repo-stats-json.XXXXXX")
     JSON_REPO_COUNTER=0
 
@@ -398,7 +415,7 @@ GenerateFiles() {
     ######################################################
     # Need to see if there is a file that already exists #
     ######################################################
-    EXISTING_JSON_CMD=$(find . -name "$ORG_NAME-all_repos-*.json" |grep . 2>&1)
+    EXISTING_JSON_CMD=$(find . -name "$FILE_PREFIX-all_repos-*.json" |grep . 2>&1)
     ERROR_CODE=$?
     if [ "${ERROR_CODE}" -eq 0 ]; then
       JSON_FILE_NAME="${EXISTING_JSON_CMD:2}"
@@ -410,12 +427,12 @@ GenerateFiles() {
   ####################
   # Example: MyOrg-all_repos-201901041059.csv
   if [[ ${JSON_OUTPUT} -ne 1 ]]; then
-    OUTPUT_FILE_NAME="$ORG_NAME-all_repos-$DATE.csv"
+    OUTPUT_FILE_NAME="$FILE_PREFIX-all_repos-$DATE.csv"
 
     ######################################################
     # Need to see if there is a file that already exists #
     ######################################################
-    EXISTING_FILE_CMD=$(find . -name "$ORG_NAME-all_repos-*" |grep . 2>&1)
+    EXISTING_FILE_CMD=$(find . -name "$FILE_PREFIX-all_repos-*" |grep . 2>&1)
 
     #######################
     # Load the error code #
@@ -609,8 +626,29 @@ isCompatibleGHESVersion() {
 GetOrgsFromFile() {
   # shellcheck disable=SC2034
   # Unused variables left for readability
-  while IFS=, read -r login
+  #############################################################################
+  # Read the organization list.                                               #
+  #                                                                           #
+  # 'read' splits on newline only, so a file saved with Windows line endings  #
+  # leaves a trailing carriage return on every name. That character is then   #
+  # carried into the API URL and gh rejects the request with 'invalid control #
+  # character in URL', which gives no hint that line endings are the cause.   #
+  # Strip it here so either convention works.                                 #
+  #                                                                           #
+  # The '[[ -n ${login} ]]' guard handles a final line with no terminating    #
+  # newline: 'read' returns non-zero for it even though it set the variable,  #
+  # so without the guard the last organization in the file is silently        #
+  # skipped.                                                                  #
+  #############################################################################
+  while IFS=, read -r login || [[ -n ${login} ]]
   do
+    login="${login%$'\r'}"
+
+    # Skip blank lines and comments so a hand-maintained list can be annotated.
+    if [[ -z ${login} ]] || [[ ${login} == \#* ]]; then
+      continue
+    fi
+
     ORG_NAME="${login}"
 
     echo "Checking access to org: ${ORG_NAME}"
