@@ -13,7 +13,14 @@ This is a fork of [`mona-actions/gh-repo-stats`](https://github.com/mona-actions
 1. `gh auth refresh -h github.com -s read:project`
 1. `gh extension install anarchitect/gh-repo-stats --pin inventory-v1.5`
 1. `gh repo-stats --org <ORG_NAME>`
-1. Profit! 💰 💸 🤑 💸 💰
+
+To scan several organizations in one run, put their names in a file, one per line, and pass it instead:
+
+```powershell
+gh repo-stats --input orgs.txt
+```
+
+Results for every organization land in a single CSV, distinguished by the `Org_Name` column. Blank lines and `#` comments in the list are ignored.
 
 Running as an organization owner is required. Budget roughly 20 seconds per repository — the run is paced to stay inside GitHub's rate limits.
 
