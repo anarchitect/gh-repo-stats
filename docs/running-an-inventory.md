@@ -102,7 +102,7 @@ The `Token scopes` line must include `read:project`.
 ## 3. Install the inventory tool
 
 ```powershell
-gh extension install anarchitect/gh-repo-stats --pin inventory-v1.4
+gh extension install anarchitect/gh-repo-stats --pin inventory-v1.5
 ```
 
 The `--pin` flag locks you to a specific tested version, so results stay reproducible if the tool is updated later. Confirm it installed:
@@ -154,24 +154,25 @@ Pass a file of organization names instead of `--org`, one per line:
 gh repo-stats --input orgs.txt --output CSV
 ```
 
-> [!WARNING]
-> **The file must use Unix (LF) line endings.** With Windows (CRLF) endings the carriage return is carried into the API URL and every organization fails:
->
-> ```
-> parse "https://api.github.com/orgs/my-org\r/memberships/you":
-> net/url: invalid control character in URL
-> ```
->
-> Notepad and many Windows editors default to CRLF. In VS Code, use the **CRLF/LF** selector in the status bar. From PowerShell:
->
-> ```powershell
-> [System.IO.File]::WriteAllText("orgs.txt", "first-org`nsecond-org`n")
-> ```
+Blank lines and lines beginning with `#` are ignored, so the list can be annotated:
 
-Two further things to expect:
+```
+# Acquired business units
+contoso-engineering
+contoso-data
 
-- **All organizations are written to a single CSV**, distinguished by the `Org_Name` column. The filename omits the organization name, so it begins with a hyphen — `-all_repos-<timestamp>.csv`.
+# Legacy
+fabrikam-archive
+```
+
+Either Windows or Unix line endings will work.
+
+Two things to expect:
+
+- **All organizations are written to a single CSV**, distinguished by the `Org_Name` column. The file is named after the list — `orgs.txt` produces `orgs-all_repos-<timestamp>.csv`.
 - **Runtime is cumulative.** At roughly 20 seconds per repository, the total is the sum across every organization in the file. Check the combined repository count against the 1,500 guidance above before starting.
+
+If the same repository appears twice, for example because an organization is listed more than once, it is analyzed once and skipped thereafter.
 
 ---
 
@@ -215,8 +216,8 @@ An empty `Last_Pipeline_Status` means the repository has never run a workflow. A
 | `the token lacks administration access` | Not signed in as an organization owner | Re-run `gh auth login` as an owner |
 | `API rate limit exhausted` | The hourly quota ran out mid-run | Wait for the quota to reset before retrying. If the organization has 1,500 or more repositories, raise it rather than simply re-running |
 | Filename ends `-INCOMPLETE.csv` | The run stopped partway | Keep the file and the terminal error message; do not treat it as a full inventory |
-| `invalid API endpoint: "C:/Program Files/Git/"` | An older version, on a Windows shell reporting `OSTYPE` as `cygwin` | Reinstall pinned to `inventory-v1.4` |
-| `net/url: invalid control character in URL` | The `--input` organization file has Windows (CRLF) line endings | Save it with Unix (LF) endings — see [scanning more than one organization](#scanning-more-than-one-organization) |
+| `invalid API endpoint: "C:/Program Files/Git/"` | An older version, on a Windows shell reporting `OSTYPE` as `cygwin` | Reinstall pinned to `inventory-v1.5` |
+| `net/url: invalid control character in URL` | The `--input` organization file has Windows (CRLF) line endings, on a version older than `inventory-v1.5` | Reinstall pinned to `inventory-v1.5` |
 
 ---
 

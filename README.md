@@ -11,7 +11,7 @@ This is a fork of [`mona-actions/gh-repo-stats`](https://github.com/mona-actions
 1. Install [GitHub CLI](https://cli.github.com/)
 1. Install [jq](https://jqlang.org/download/)
 1. `gh auth refresh -h github.com -s read:project`
-1. `gh extension install anarchitect/gh-repo-stats --pin inventory-v1.4`
+1. `gh extension install anarchitect/gh-repo-stats --pin inventory-v1.5`
 1. `gh repo-stats --org <ORG_NAME>`
 1. Profit! 💰 💸 🤑 💸 💰
 
