@@ -6,6 +6,29 @@ For a summary of the tool itself, see the [README](../README.md).
 
 ---
 
+## Added columns
+
+This fork appends eight columns after the existing ones, so column positions in downstream tooling are unchanged.
+
+| Column | Source | Notes |
+| --- | --- | --- |
+| `Default_Branch` | GraphQL | Empty for a repository with no commits |
+| `Pipeline_Count` | REST | Number of GitHub Actions workflows defined |
+| `Last_Commit_Date` | GraphQL | Last commit on the default branch |
+| `Last_Commit_Author` | GraphQL | Commas are replaced with spaces to protect the CSV |
+| `Last_Pipeline_Status` | REST | Conclusion of the most recent run, or its status while still running |
+| `Last_Pipeline_Date` | REST | When that run last updated |
+| `Last_Pipeline_Ref` | REST | Branch the run executed against; not necessarily the default branch |
+| `Maintainers` | REST | Direct collaborators only — see [Reading the results](#reading-the-results) |
+
+The first three come from the existing GraphQL query at no additional API cost. The Actions and collaborator fields are only available over REST, because the GraphQL API has no schema for Actions workflow runs, and cost roughly three REST calls per repository. Because of that cost, an organization of roughly **1,500 repositories or more** may exhaust the hourly REST quota before a run finishes.
+
+Enrichment failures abort the run rather than writing blank cells, so a `0` in `Pipeline_Count` always means "no workflows" and never "could not check". On abort the partial CSV is renamed to `*-INCOMPLETE.csv` and the exit code is non-zero.
+
+The full column reference, including the columns inherited from upstream, is in the [README](../README.md#output).
+
+---
+
 ## Before you start
 
 > [!IMPORTANT]
@@ -123,6 +146,35 @@ The file to keep is `YOUR-ORG-all_repos-<timestamp>.csv`.
 
 ---
 
+## Scanning more than one organization
+
+Pass a file of organization names instead of `--org`, one per line:
+
+```powershell
+gh repo-stats --input orgs.txt --output CSV
+```
+
+> [!WARNING]
+> **The file must use Unix (LF) line endings.** With Windows (CRLF) endings the carriage return is carried into the API URL and every organization fails:
+>
+> ```
+> parse "https://api.github.com/orgs/my-org\r/memberships/you":
+> net/url: invalid control character in URL
+> ```
+>
+> Notepad and many Windows editors default to CRLF. In VS Code, use the **CRLF/LF** selector in the status bar. From PowerShell:
+>
+> ```powershell
+> [System.IO.File]::WriteAllText("orgs.txt", "first-org`nsecond-org`n")
+> ```
+
+Two further things to expect:
+
+- **All organizations are written to a single CSV**, distinguished by the `Org_Name` column. The filename omits the organization name, so it begins with a hyphen — `-all_repos-<timestamp>.csv`.
+- **Runtime is cumulative.** At roughly 20 seconds per repository, the total is the sum across every organization in the file. Check the combined repository count against the 1,500 guidance above before starting.
+
+---
+
 ## Removing the tool afterwards
 
 ```powershell
@@ -151,8 +203,6 @@ A `0` in `Pipeline_Count` genuinely means the repository has no workflows. The s
 
 An empty `Last_Pipeline_Status` means the repository has never run a workflow. An empty `Default_Branch` means the repository has no commits.
 
-The full column reference is in the [README](../README.md#output).
-
 ---
 
 ## Troubleshooting
@@ -166,6 +216,7 @@ The full column reference is in the [README](../README.md#output).
 | `API rate limit exhausted` | The hourly quota ran out mid-run | Wait for the quota to reset before retrying. If the organization has 1,500 or more repositories, raise it rather than simply re-running |
 | Filename ends `-INCOMPLETE.csv` | The run stopped partway | Keep the file and the terminal error message; do not treat it as a full inventory |
 | `invalid API endpoint: "C:/Program Files/Git/"` | An older version, on a Windows shell reporting `OSTYPE` as `cygwin` | Reinstall pinned to `inventory-v1.4` |
+| `net/url: invalid control character in URL` | The `--input` organization file has Windows (CRLF) line endings | Save it with Unix (LF) endings — see [scanning more than one organization](#scanning-more-than-one-organization) |
 
 ---
 

@@ -2,7 +2,7 @@
 
 `gh repo-stats` scans an organization or list of organizations for all repositories and gathers size statistics, key to understanding how long a migration of the data from one instance of **GitHub** to another will take.
 
-This is a fork of [`mona-actions/gh-repo-stats`](https://github.com/mona-actions/gh-repo-stats) that adds eight columns covering CI/CD pipelines and repository ownership. See [Added columns](#added-columns).
+This is a fork of [`mona-actions/gh-repo-stats`](https://github.com/mona-actions/gh-repo-stats) that adds eight columns covering CI/CD pipelines and repository ownership. See [Added columns](docs/running-an-inventory.md#added-columns).
 
 ## Quickstart
 
@@ -63,25 +63,6 @@ Example:
 ```
 
 `--output` selects the output *format* (`CSV` or `Table`), not a filename. Results are always written to `<org>-all_repos-<timestamp>.csv` in the current directory.
-
-## Added columns
-
-Eight columns are appended after the existing ones, so column positions in downstream tooling are unchanged.
-
-| Column | Source | Notes |
-| --- | --- | --- |
-| `Default_Branch` | GraphQL | Empty for a repository with no commits |
-| `Pipeline_Count` | REST | Number of GitHub Actions workflows defined |
-| `Last_Commit_Date` | GraphQL | Last commit on the default branch |
-| `Last_Commit_Author` | GraphQL | Commas are replaced with spaces to protect the CSV |
-| `Last_Pipeline_Status` | REST | Conclusion of the most recent run, or its status while still running |
-| `Last_Pipeline_Date` | REST | When that run last updated |
-| `Last_Pipeline_Ref` | REST | Branch the run executed against; not necessarily the default branch |
-| `Maintainers` | REST | Direct collaborators only — see [reading the results](docs/running-an-inventory.md#reading-the-results) |
-
-The first three come from the existing GraphQL query at no additional API cost. The Actions and collaborator fields are only available over REST, because the GraphQL API has no schema for Actions workflow runs, and cost roughly three REST calls per repository. Because of that cost, an organization of roughly **1,500 repositories or more** may exhaust the hourly REST quota before a run finishes.
-
-Enrichment failures abort the run rather than writing blank cells, so a `0` in `Pipeline_Count` always means "no workflows" and never "could not check". On abort the partial CSV is renamed to `*-INCOMPLETE.csv` and the exit code is non-zero.
 
 ## Permissions
 
